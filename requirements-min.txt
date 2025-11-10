@@ -1,0 +1,18 @@
+# 核心框架
+transformers==4.43.0
+peft==0.5.0
+timm==0.4.12
+omegaconf==2.3.0
+
+# 常用基础库
+numpy==1.26.4
+Pillow==10.3.0
+matplotlib==3.9.1
+tqdm==4.66.4
+
+# 分词/权重加载（LLaMA/LLaVA/BLIP2 常用）
+sentencepiece==0.1.99
+huggingface-hub==0.23.4
+
+# 可选：8bit 低资源加载（如果用 load_in_8bit / LoRA 低资源）
+bitsandbytes==0.43.1
