@@ -1,6 +1,6 @@
 cd ..
-python vead_train.py \
-    -dvc "5" \
+python -m pdb vead_train.py \
+    -dvc "2,3,4,5" \
     -edvc "6,7" \
     -mn llava \
     -dna WaterBird \

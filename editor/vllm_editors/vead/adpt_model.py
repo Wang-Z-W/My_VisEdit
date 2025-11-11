@@ -47,7 +47,7 @@ class InfluenceMapper(nn.Module):
 
 class VisionEditAdaptor(nn.Module):
     def __init__(self, hidden_size, mid_dim = 1024, cross_att_head_n = 8, 
-                 img_tok_n = 576, add_it = False, infm_dim = 256) -> None:
+                 img_tok_n = 576, add_it = False, infm_dim = 256, device = 'cuda:0') -> None:
         '''
         hidden_size: dimension of embeddings
         mid_dim: middle dimension of adaptor
@@ -68,6 +68,8 @@ class VisionEditAdaptor(nn.Module):
         self.ln_edit_reps = nn.LayerNorm(hidden_size) 
         self.influence_mapper = InfluenceMapper(hidden_size, infm_dim, cross_att_head_n) 
         self.open_adaptor(False)
+        self.device = device
+        self.to(device)
         self.set_edit_signal(None, None, None)
 
     def reset_parameters(self):
@@ -125,9 +127,9 @@ class VisionEditAdaptor(nn.Module):
     def set_edit_signal(self, edit_reps:torch.Tensor, edit_reps_att_mask:torch.Tensor, 
                            prompt_end:torch.Tensor):
         # edit_reps/edit_reps_att_mask: [b,l,d], prompt_end: [b]
-        self.edit_reps = edit_reps
-        self.edit_reps_att_mask = edit_reps_att_mask
-        self.prompt_end = prompt_end
+        self.edit_reps = edit_reps.to(self.device) if edit_reps is not None else None
+        self.edit_reps_att_mask = edit_reps_att_mask.to(self.device) if edit_reps_att_mask is not None else None
+        self.prompt_end = prompt_end.to(self.device) if prompt_end is not None else None
     
     def set_input_info(self, has_img = True, vt_begin:int = None, vt_end:int = None):
         '''Should be called every time input to the llm. '''

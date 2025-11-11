@@ -97,9 +97,10 @@ class VEAD(VLLMBaseEditorWithTraining):
                 edit_layer._forward_hooks.clear()
                 print('Clear all hooks of %s and re-hook adaptor.'%edit_layer_name)
             edit_layer.adaptor_hooked = True
+            edit_layer_device = edit_layer.self_attn.q_proj.weight.device
             adaptor = VisionEditAdaptor(config.llm_hidden_size, config.adaptor_mid_dim, 
                 config.adaptor_cross_att_head_n, self.vllm.get_img_token_n(), 
-                config.IT.add_it, self.cfg.IT.mid_dim).to(device[0])
+                config.IT.add_it, self.cfg.IT.mid_dim, edit_layer_device)
             hook = edit_layer.register_forward_hook(adapter_hook_wrap(adaptor))
             adaptors[edit_layer_name] = adaptor
             adaptors_hooks[edit_layer_name] = hook
@@ -198,6 +199,9 @@ class VEAD(VLLMBaseEditorWithTraining):
             return args, kargs
         skip_layers = [self.cfg.llm_layer_tmp.format(i) for i in range(mid_inpt_layer_i)]
         inpt_layer = [self.cfg.llm_layer_tmp.format(mid_inpt_layer_i)]
+        mid_inpt_layer_i_device = find_module(infer_vllm.model, self.cfg.llm_layer_tmp.format(mid_inpt_layer_i)).self_attn.q_proj.weight.device
+        if mid_inpt_reps.device != mid_inpt_layer_i_device:
+            mid_inpt_reps = mid_inpt_reps.to(mid_inpt_layer_i_device)
         with TraceDict(infer_vllm.model, [self.cfg.llm_layer_tmp.format(0)], retain_input=True
             ) as td, TraceDict(infer_vllm.model, skip_layers, layer_func_replace=skip_layer
             ), TraceDict(infer_vllm.model, inpt_layer, edit_input=mid_inpt_embeds): 
@@ -382,29 +386,59 @@ class VEAD(VLLMBaseEditorWithTraining):
                 args_rg, kargs_rg = att_trace_rg[k].input
                 assert len(args_r) == 0 and len(args_rg) == 0
                 kargs_r['hidden_states'][:, vt_range_r[0], vt_range_r[1]] = kargs_rg['hidden_states'][:, vt_range_rg[0], vt_range_rg[1]]
-                kargs = {k: torch.repeat_interleave(v.unsqueeze(0), 1 + vtsn * test_n, 0) # [1+48*10, 4, 576+, 4096]
-                    if k in ['hidden_states', 'attention_mask'] else v for k, v in kargs_r.items()}
-                kargs['attention_mask'] = kargs['attention_mask'].flatten(0, 1) # [(1+48*10)*4, 576+, 4096]
-                hs = kargs['hidden_states'] # [1+48(vt_sample_n)*10(test_n), 4, 576+, 4096]
-                # pollute
-                for i in range(vtsn): # 48
-                    ats = attr_toks[i]
-                    pollute_size = [test_n, batch_size, len(ats), hidden_dim]
-                    bs, be = 1 + i * test_n, 1 + (i + 1) * test_n # For one visual token, test test_n times and stored in bs~be
-                    hs[bs:be, :, ats] += torch.normal(0, noise_level, pollute_size, 
-                        generator=self.pt_rng, device = self.data_proc_device) # Insert pollution
-                kargs['hidden_states'] = hs.reshape((1+vtsn*test_n)*batch_size, 
-                        tok_len, hidden_dim) # [(1+48*10)*4, 576+, 4096]
+                # 原始实现：扩批 + 一次性前向（显存峰值高），现保留但注释掉
+                # kargs = {k: torch.repeat_interleave(v.unsqueeze(0), 1 + vtsn * test_n, 0) # [1+vtsn*test_n, b, l, d]
+                #     if k in ['hidden_states', 'attention_mask'] else v for k, v in kargs_r.items()}
+                # kargs['attention_mask'] = kargs['attention_mask'].flatten(0, 1) # [(1+vtsn*test_n)*b, l, ...]
+                # hs = kargs['hidden_states'] # [1+vtsn*test_n, b, l, d]
+                # # pollute
+                # for i in range(vtsn):
+                #     ats = attr_toks[i]
+                #     pollute_size = [test_n, batch_size, len(ats), hidden_dim]
+                #     bs, be = 1 + i * test_n, 1 + (i + 1) * test_n
+                #     hs[bs:be, :, ats] += torch.normal(0, noise_level, pollute_size, generator=self.pt_rng, device = self.data_proc_device)
+                # kargs['hidden_states'] = hs.reshape((1+vtsn*test_n)*batch_size, tok_len, hidden_dim) # [(1+vtsn*test_n)*b, l, d]
+                # att_layer = find_module(trace_vllm.model, k)
+                # outpt = att_layer(**kargs)[0].reshape(1+vtsn*test_n, batch_size, tok_len, hidden_dim) # [1+vtsn*test_n, b, l, d]
+                # outpt = outpt.to('cpu')
+                # clean_out = [outpt[0, i, pe] for i, pe in enumerate(prompt_ends)] # b * [d]
+                # dirty_out = outpt[1:].reshape(vtsn, test_n, batch_size, tok_len, hidden_dim) # [vtsn, test_n, b, l, d]
+                # dirty_out = [dirty_out[:, :, i, prompt_ends[i]] for i in range(batch_size)] # b * [vtsn, test_n, d]
+                # batch_infl = [1 - torch.cosine_similarity(do, co.reshape(1, 1, hidden_dim), -1) for do, co in zip(dirty_out, clean_out)] # b * [vtsn, test_n]
+                # batch_infl = torch.stack([i.mean(1) for i in batch_infl], 0) # [b, vtsn]
+                # rg_influences.append(batch_infl)
+
+                # 新实现：先算干净输出，再逐次注入噪声并前向，在线累计贡献（低显存峰值）
                 att_layer = find_module(trace_vllm.model, k)
-                outpt = att_layer(**kargs)[0].reshape(1+vtsn*test_n, batch_size, 
-                        tok_len, hidden_dim) # [1+48*10, 4, 576+, 4096]
-                # Calculate the contribution. Please refer to the equation (7) in the paper
-                clean_out = [outpt[0, i, pe] for i, pe in enumerate(prompt_ends)] # b * [4096], extract the last token embedding
-                dirty_out = outpt[1:].reshape(vtsn, test_n, batch_size, tok_len, hidden_dim) # [48, 10, 4, 576+, 4096]
-                dirty_out = [dirty_out[:, :, i, prompt_ends[i]] for i in range(batch_size)] # b * [48, 10, 4096], extract the last token embedding
-                batch_infl = [1 - torch.cosine_similarity(do, co.reshape(1, 1, hidden_dim), -1) # ~ [0, 2]
-                             for do, co in zip(dirty_out, clean_out)] # b * [48, 10]
-                batch_infl = torch.stack([i.mean(1) for i in batch_infl], 0) # [b, 48]
+                out_clean = att_layer(**kargs_r)[0]  # [b, l, d]
+                clean_out = out_clean[range(batch_size), prompt_ends].to('cpu')  # [b, d]
+
+                batch_infl = torch.zeros(batch_size, vtsn, device='cpu')
+                for vi in range(vtsn):
+                    ats = attr_toks[vi]  # numpy 索引；转为 torch 索引更稳妥
+                    ats_t = torch.tensor(ats, device=self.data_proc_device, dtype=torch.long)
+                    infl_accum = torch.zeros(batch_size, device='cpu')
+
+                    for t in range(test_n):
+                        hs_t = kargs_r['hidden_states'].clone()  # [b, l, d]
+                        noise = torch.normal(0, noise_level, [batch_size, ats_t.numel(), hidden_dim],
+                                             generator=self.pt_rng, device=self.data_proc_device)
+                        hs_t[:, ats_t] += noise
+
+                        kargs_dirty = dict(kargs_r)
+                        kargs_dirty['hidden_states'] = hs_t
+
+                        out_dirty = att_layer(**kargs_dirty)[0]  # [b, l, d]
+                        dirty_last = out_dirty[range(batch_size), prompt_ends].to('cpu')  # [b, d]
+
+                        cos = torch.nn.functional.cosine_similarity(dirty_last, clean_out, dim=-1)  # [b]
+                        infl_accum += (1 - cos)
+
+                        del hs_t, noise, out_dirty
+                        torch.cuda.empty_cache()
+
+                    batch_infl[:, vi] = infl_accum / test_n
+
                 rg_influences.append(batch_infl)
         rg_influences = torch.stack(rg_influences, 0).mean(0) # [b, 48]
         rg_influences = rg_influences / rg_influences.sum(1, keepdim = True) # [b, 48]
@@ -545,12 +579,13 @@ class VEAD(VLLMBaseEditorWithTraining):
             infm_lambda = self.cfg.train_cfg.inf_mapper_lambda
             for k in self.adaptors.keys():
                 rg_img_reps, l_img_reps, prompt_end_reps = influence_mapper_inpts[k]
-                infm_rg_pre = self.adaptors[k].influence_mapper(rg_img_reps, prompt_end_reps) # [b, 48]
-                infm_l_pre = self.adaptors[k].influence_mapper(l_img_reps, prompt_end_reps) # [b, 48]
+                adaptor_k_device = self.adaptors[k].device
+                infm_rg_pre = self.adaptors[k].influence_mapper(rg_img_reps.to(adaptor_k_device), prompt_end_reps.to(adaptor_k_device)) # [b, 48]
+                infm_l_pre = self.adaptors[k].influence_mapper(l_img_reps.to(adaptor_k_device), prompt_end_reps.to(adaptor_k_device)) # [b, 48]
                 log_dict['Influence predict sigmoid rel-gen mean-%s'%k] = float(torch.sigmoid(infm_rg_pre).mean())
                 log_dict['Influence predict sigmoid loc mean-%s'%k] = float(torch.sigmoid(infm_l_pre).mean())
                 # losses
-                rg_relative_inf_loss = -(rg_influences * torch.log(torch.softmax(infm_rg_pre, 1) + 1e-8)).sum(1).mean(0) * infm_lambda
+                rg_relative_inf_loss = -(rg_influences.to(adaptor_k_device) * torch.log(torch.softmax(infm_rg_pre, 1) + 1e-8)).sum(1).mean(0) * infm_lambda
                 # y = 0.95
                 # rg_up_loss = - (y * torch.log(torch.sigmoid(infm_rg_pre) + 1e-8) 
                 #     + (1 - y) * torch.log(1 - torch.sigmoid(infm_rg_pre) + 1e-8)).mean() * infm_lambda
@@ -560,7 +595,7 @@ class VEAD(VLLMBaseEditorWithTraining):
                 log_dict['Influence mapper rel-gen up loss-%s'%k] = float(rg_up_loss)
                 log_dict['Influence mapper loc down loss-%s'%k] = float(l_down_loss)
                 infm_loss = rg_relative_inf_loss + rg_up_loss + l_down_loss
-                loss += infm_loss
+                loss += infm_loss.to(loss.device)
         # update
         loss.backward()
         self.opt.step()
@@ -584,6 +619,8 @@ class VEAD(VLLMBaseEditorWithTraining):
 
 def label_loss(logits, label_ids, masks, average = True):
     # logits: [batch_size, total_l, d], label_ids/masks: [batch_size, short_l]
+    label_ids = move_to_device(label_ids, logits.device)
+    masks = move_to_device(masks, logits.device)
     logits = logits[:, -label_ids.shape[1]:]
     log_pre_p = torch.log_softmax(logits, -1)
     log_pre_p = log_pre_p.gather(-1, label_ids.unsqueeze(-1)).squeeze(-1) # [batch, short_l]
@@ -594,6 +631,8 @@ def label_loss(logits, label_ids, masks, average = True):
 
 def logit_KL_loss(logits1, logits2, masks, average = True):
     # logits1/logits2: [batch, total_l, voc_size], masks: [batch, short_l]
+    assert logits1.device == logits2.device
+    masks = move_to_device(masks, logits1.device)
     logits1 = logits1[:, -masks.shape[1]:]
     logits2 = logits2[:, -masks.shape[1]:]
     log_p1 = torch.log_softmax(logits1, -1)
