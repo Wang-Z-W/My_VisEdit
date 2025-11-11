@@ -16,7 +16,6 @@ For example:
 ```
 cd scripts
 bash train_llava_evqa.sh
-<<<<<<< HEAD
 ```
 
 
