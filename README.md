@@ -16,6 +16,7 @@ For example:
 ```
 cd scripts
 bash train_llava_evqa.sh
+<<<<<<< HEAD
 ```
 
 
@@ -24,3 +25,6 @@ bash train_llava_evqa.sh
 
 
 
+=======
+```
+>>>>>>> f47f769 (fix multi-GPU)

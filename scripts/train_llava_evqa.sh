@@ -1,7 +1,7 @@
 cd ..
 python vead_train.py \
-    -dvc "6" \
-    -edvc "7" \
+    -dvc "2,3,4,5" \
+    -edvc "6,7" \
     -mn llava \
     -dna EVQA \
     -dn 20 \

@@ -53,7 +53,7 @@ class LlavaForEdit(BaseVLLMForEdit):
             inpt = {'attention_mask': attention_mask, 'inputs_embeds': inputs_embeds, 'position_ids': position_ids}
             return inpt
         inpt = self.processor(texts, imgs, return_tensors = 'pt', padding = True)
-        for k, v in inpt.items(): inpt[k] = v.to(self.device) if hasattr(v, 'to') else v
+        for k, v in inpt.items(): inpt[k] = v.to(self.device[0]) if hasattr(v, 'to') else v
         llm_inpt = get_llava_llm_inpt(self.model, inpt.input_ids, inpt.attention_mask, inpt.pixel_values)
         if imgs != None:
             img_begin = torch.where(inpt['input_ids'][0] == self.get_img_special_token_id())[0][0]

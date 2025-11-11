@@ -104,8 +104,8 @@ class BaseVLLMForEdit(ABC):
             mask[len(prompt_tok)-1:-1] += 1 # Activate the label token
             label_masks.append(mask)
         input_embeds, vt_range = self.get_llm_input_embeds(input_strs, imgs)
-        label_ids = pad_sequence(label_ids, True, tokenizer.pad_token_id).to(self.device)[:, min_prompt_tok_n-1:]
-        label_masks = pad_sequence(label_masks, True, 0).to(self.device)[:, min_prompt_tok_n-1:]
+        label_ids = pad_sequence(label_ids, True, tokenizer.pad_token_id).to(self.device[0])[:, min_prompt_tok_n-1:]
+        label_masks = pad_sequence(label_masks, True, 0).to(self.device[0])[:, min_prompt_tok_n-1:]
         return (input_embeds, vt_range), label_ids, label_masks
 
     def label_loss(self, logits, label_ids, label_masks, average = True):
