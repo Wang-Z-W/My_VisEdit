@@ -8,15 +8,15 @@
 
 This is a multi-GPU implementation of **AAAI 2025 (Oral)** paper [*Attribution Analysis Meets Model Editing: Advancing Knowledge Correction in Vision Language Models with VisEdit*.](https://ojs.aaai.org/index.php/AAAI/article/view/32215)
 
-# Setup
-Please refer to [VisEdit](https://github.com/qizhou000/VisEdit) for detailed setup.
+# Setup and Dataset
+Please refer to [VisEdit](https://github.com/qizhou000/VisEdit) for detailed setup and datasets.
 
 # Run
-For example,
-`
+For example:
+```
 cd scripts
 bash train_llava_evqa.sh
-`
+```
 
 
 
