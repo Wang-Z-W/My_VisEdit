@@ -57,8 +57,8 @@ class VEADConfig(BaseConfig):
         raise
 
 class VEAD(VLLMBaseEditorWithTraining):
-    def __init__(self, vllm: BaseVLLMForEdit, config:VEADConfig, device='cuda:0', 
-                 vllm_data_proc: BaseVLLMForEdit = None, data_proc_device = None, 
+    def __init__(self, vllm: BaseVLLMForEdit, config:VEADConfig, device:List[str] = ['cuda:0'], 
+                 vllm_data_proc: BaseVLLMForEdit = None, data_proc_device:List[str] = None, 
                  train_data_cache_root = 'data'):
         super().__init__(vllm, config, device)
         self.cfg = config
@@ -66,9 +66,8 @@ class VEAD(VLLMBaseEditorWithTraining):
             self.vllm_data_proc = vllm_data_proc
             self.vllm_data_proc.model.eval()
             self.vllm_data_proc.model.requires_grad_(False)
-            self.data_proc_device = data_proc_device[-1]
-            if len(data_proc_device) == 1:
-                self.vllm_data_proc.set_device(data_proc_device[-1])
+            self.data_proc_device = data_proc_device
+            self.vllm_data_proc.set_device(data_proc_device)
         self.adaptors, self.adaptors_hooks = self.init_hook_adaptors(config, vllm, device)
         self.train_data_cache_dir = os.path.join(train_data_cache_root, 'vead_train_cache')
         self.init_wrap_get_llm_outpt()
@@ -78,7 +77,7 @@ class VEAD(VLLMBaseEditorWithTraining):
     ############################################################################
     ############################# Initialize ###################################
     ############################################################################
-    def init_hook_adaptors(self, config:VEADConfig, vllm:BaseVLLMForEdit, device
+    def init_hook_adaptors(self, config:VEADConfig, vllm:BaseVLLMForEdit, device:List[str]
             )->Tuple[Dict[str, VisionEditAdaptor], Dict[str, RemovableHandle]]:
         def adapter_hook_wrap(adpt):
             def adapter_hook(m, args, outpt):
@@ -251,7 +250,7 @@ class VEAD(VLLMBaseEditorWithTraining):
         if not hasattr(self, 'data_proc_device'):
             raise BaseException("Not set data processing model.")
         self.np_rng = np.random.default_rng(self.random_seed)
-        self.pt_rng = torch.Generator(device=self.data_proc_device)
+        self.pt_rng = torch.Generator(device=self.data_proc_device[-1])
         self.pt_rng.manual_seed(self.random_seed)
         # processing
         def get_llm_layer_inpt_embeds(input_embeds, vt_range):
@@ -416,13 +415,13 @@ class VEAD(VLLMBaseEditorWithTraining):
                 batch_infl = torch.zeros(batch_size, vtsn, device='cpu')
                 for vi in range(vtsn):
                     ats = attr_toks[vi]  # numpy 索引；转为 torch 索引更稳妥
-                    ats_t = torch.tensor(ats, device=self.data_proc_device, dtype=torch.long)
+                    ats_t = torch.tensor(ats, device=self.data_proc_device[-1], dtype=torch.long)
                     infl_accum = torch.zeros(batch_size, device='cpu')
 
                     for t in range(test_n):
                         hs_t = kargs_r['hidden_states'].clone()  # [b, l, d]
                         noise = torch.normal(0, noise_level, [batch_size, ats_t.numel(), hidden_dim],
-                                             generator=self.pt_rng, device=self.data_proc_device)
+                                             generator=self.pt_rng, device=self.data_proc_device[-1])
                         hs_t[:, ats_t] += noise
 
                         kargs_dirty = dict(kargs_r)
@@ -475,11 +474,11 @@ class VEAD(VLLMBaseEditorWithTraining):
             # load edit reps
             for k in edit_signal.keys():
                 path = os.path.join(edit_signal_dir_i, k)
-                d = torch.load(path, map_location = self.data_proc_device)
+                d = torch.load(path, map_location = self.data_proc_device[-1])
                 edit_signal[k].append(d)
             # load middle reps
             path = os.path.join(xym_dir_i, self.mid_inpt_start_layer)
-            rd, gd, ld = torch.load(path, map_location = self.data_proc_device)
+            rd, gd, ld = torch.load(path, map_location = self.data_proc_device[-1])
             rel_data.append(rd)
             gen_data.append(gd)
             loc_data.append(ld)
@@ -487,11 +486,11 @@ class VEAD(VLLMBaseEditorWithTraining):
         batch_edit_reps, batch_edit_reps_att_mask, batch_prompt_end = {}, {}, {}
         for k, v in edit_signal.items():
             edit_reps = [signal['edit_reps'][0] for signal in v] # edit_reps[i]: [l,d]
-            att_mask = [torch.ones([len(r)], device=self.data_proc_device) for r in edit_reps]
+            att_mask = [torch.ones([len(r)], device=self.data_proc_device[-1]) for r in edit_reps]
             prompt_end = [signal['prompt_end'] for signal in v] # prompt_end[i]: int
             edit_reps = pad_sequence(edit_reps, True) # [b, l_max, d]
             att_mask = pad_sequence(att_mask, True) # [b, l_max]
-            prompt_end = torch.tensor(prompt_end, device=self.data_proc_device)
+            prompt_end = torch.tensor(prompt_end, device=self.data_proc_device[-1])
             batch_edit_reps[k] = edit_reps
             batch_edit_reps_att_mask[k] = att_mask
             batch_prompt_end[k] = prompt_end
@@ -504,15 +503,15 @@ class VEAD(VLLMBaseEditorWithTraining):
             vt_range = vt_range[0]
             max_inpt_len = max(i.shape[1] for i in input_embeds) 
             min_prompt_len = min(i.shape[1] - l.shape[1] for i, l in zip(input_embeds, label_ids)) 
-            label_ids = [torch.cat([torch.zeros(i.shape[1]-l.shape[1]-min_prompt_len, device=self.data_proc_device), 
-                l[0], torch.zeros(max_inpt_len - i.shape[1], device=self.data_proc_device)]).to(torch.long)
+            label_ids = [torch.cat([torch.zeros(i.shape[1]-l.shape[1]-min_prompt_len, device=self.data_proc_device[-1]), 
+                l[0], torch.zeros(max_inpt_len - i.shape[1], device=self.data_proc_device[-1])]).to(torch.long)
                 for i, l in zip(input_embeds, label_ids)]
             label_ids = torch.stack(label_ids, 0) 
-            label_masks = [torch.cat([torch.zeros(i.shape[1]-m.shape[1]-min_prompt_len, device=self.data_proc_device), 
-                m[0], torch.zeros(max_inpt_len - i.shape[1], device=self.data_proc_device)]).to(torch.long)
+            label_masks = [torch.cat([torch.zeros(i.shape[1]-m.shape[1]-min_prompt_len, device=self.data_proc_device[-1]), 
+                m[0], torch.zeros(max_inpt_len - i.shape[1], device=self.data_proc_device[-1])]).to(torch.long)
                 for i, m in zip(input_embeds, label_masks)]
             label_masks = torch.stack(label_masks, 0)
-            att_masks = [torch.ones(i.shape[1], device=self.data_proc_device) for i in input_embeds]
+            att_masks = [torch.ones(i.shape[1], device=self.data_proc_device[-1]) for i in input_embeds]
             att_masks = pad_sequence(att_masks, True) 
             input_embeds = pad_sequence([e[0] for e in input_embeds], True) 
             mid_inpt = {'attention_mask': att_masks, 'inputs_embeds': input_embeds} 
@@ -530,7 +529,7 @@ class VEAD(VLLMBaseEditorWithTraining):
         infm_xy = self.__get_xy_for_influence_mapper__(rel_xym, gen_xym, loc_xym)
         # a batch of training data
         a_batch_of_training_data = move_to_device(((batch_edit_reps, batch_edit_reps_att_mask, 
-                batch_prompt_end), rel_xym, gen_xym, loc_xym, infm_xy), self.device)
+                batch_prompt_end), rel_xym, gen_xym, loc_xym, infm_xy), self.device[0])
         return a_batch_of_training_data
 
     def train_a_batch(self, a_batch_of_training_data:Tuple):

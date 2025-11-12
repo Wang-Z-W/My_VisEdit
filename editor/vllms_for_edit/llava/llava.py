@@ -7,7 +7,7 @@ import torch
 
 class LlavaForEdit(BaseVLLMForEdit):
     '''For llava-v1.5-7b-hf'''
-    def __init__(self, model_path:str, device = 'cuda', max_memory = None,
+    def __init__(self, model_path:str, device:List[str] = ['cuda:0'], max_memory = None,
                  auto_add_img_special_token = True) -> None:
         from transformers import LlavaForConditionalGeneration, LlavaProcessor
         self.model = LlavaForConditionalGeneration.from_pretrained(

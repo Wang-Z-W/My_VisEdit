@@ -23,7 +23,7 @@ class BaseVLLMForEdit(ABC):
     A wrap of VLLM that first converts both text and image into embedded 
     representations of the language model, and then achieves the subsequent inference.
     ''' 
-    def __init__(self, model:nn.Module, device:str, auto_add_img_special_token:bool) -> None:
+    def __init__(self, model:nn.Module, device:List[str], auto_add_img_special_token:bool) -> None:
         '''`auto_add_img_special_token`: if available, whether add image special 
             token automatically for input prompts.'''
         super().__init__() 
@@ -131,9 +131,9 @@ class BaseVLLMForEdit(ABC):
             loss = loss / label_masks.sum() 
         return loss
 
-    def set_device(self, device):
+    def set_device(self, device:List[str]):
         self.device = device
-        self.model.to(device)
+        # self.model.to(device[0])
 
     @abstractmethod
     def get_llm_tokenizer(self)->AutoTokenizer:

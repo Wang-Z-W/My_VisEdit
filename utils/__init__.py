@@ -58,7 +58,7 @@ def get_model_path(model_name:str)->str:
     return model_path_map[get_full_model_name(model_name)]
 
 
-def load_vllm_for_edit(model_name:str, device:str)->BaseVLLMForEdit:
+def load_vllm_for_edit(model_name:str, device:List[str])->BaseVLLMForEdit:
     model_name = get_full_model_name(model_name)
     model_path = get_model_path(model_name)
     max_memory = get_max_memory(device)

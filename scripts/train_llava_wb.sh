@@ -1,7 +1,7 @@
 cd ..
-python -m pdb vead_train.py \
-    -dvc "2,3,4,5" \
-    -edvc "6,7" \
+python vead_train.py \
+    -dvc "1" \
+    -edvc "2" \
     -mn llava \
     -dna WaterBird \
     -dfn edit_annotations_truelabel_balanced \
